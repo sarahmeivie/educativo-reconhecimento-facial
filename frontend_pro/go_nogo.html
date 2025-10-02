@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go/No-Go</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <script defer>
+  // ========= Utils =========
+  const $ = (id)=>document.getElementById(id);
+  function pushHistory(gameKey, sess){
+    const key = 'history_'+gameKey;
+    let arr = [];
+    try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e){ arr = []; }
+    arr.push(sess);
+    if (arr.length > 5) arr = arr.slice(arr.length - 5); // mantém 5 últimas
+    localStorage.setItem(key, JSON.stringify(arr));
+  }
+
+  // ========= Config =========
+  const TRIALS = 20;   // nº de trials
+  const STIM_MS = 800; // janela para responder (ms)
+  const GAP_MS  = 400; // intervalo entre trials (ms)
+
+  // ========= Estado =========
+  let running = false;
+  let trial = 0, hits = 0, errors = 0, block = 1;
+  let isGo = false;          // tipo do trial atual
+  let allowRespond = false;  // janela aberta para responder
+  let timerId = null, trialEndsAt = 0;
+
+  function resetHUD(){
+    $('hudBlock').textContent = String(block);
+    $('hudTrial').textContent = '0';
+    $('hudHits').textContent  = '0';
+    $('hudErr').textContent   = '0';
+    $('bar').style.width = '0%';
+    $('feedback').textContent = '';
+    $('timerG').textContent = '0.0s';
+  }
+
+  function startGame(){
+    if (running) return;
+    running = true;
+    trial = 0; hits = 0; errors = 0; block = 1;
+    resetHUD();
+    nextTrial();
+  }
+
+  function nextTrial(){
+    if (timerId){ clearInterval(timerId); timerId = null; }
+
+    trial++;
+    $('hudTrial').textContent = String(trial);
+    $('bar').style.width = Math.min(100, ((trial-1)/TRIALS*100)) + '%';
+    $('feedback').textContent = '';
+
+    if (trial > TRIALS){
+      finish();
+      return;
+    }
+
+    // sorteia trial
+    isGo = Math.random() < 0.7;
+
+    // pinta o estímulo
+    const stimEl = $('stim');
+    stimEl.textContent = '●';
+    stimEl.style.color = isGo ? '#16a34a' : '#dc2626';
+    stimEl.style.opacity = 1;
+
+    // muda sutilmente o fundo da arena
+    const STAGE_COLS = ['#ffffff','#f8fafc','#f1f5f9','#fefce8','#f0fdf4','#eff6ff'];
+    document.querySelector('.stage').style.background =
+      STAGE_COLS[Math.floor(Math.random()*STAGE_COLS.length)];
+
+    // abre janela de resposta
+    allowRespond = true;
+    const tOn = performance.now();
+    trialEndsAt = tOn + STIM_MS;
+
+    // cronômetro
+    timerId = setInterval(()=>{
+      const left = Math.max(0, trialEndsAt - performance.now());
+      $('timerG').textContent = (left/1000).toFixed(1)+'s';
+      if (left <= 0){
+        clearInterval(timerId); timerId = null;
+        closeWindow(); // encerra o trial aplicando a regra correta
+      }
+    }, 50);
+  }
+
+  function closeWindow(){
+    const wasOpen = allowRespond;
+    allowRespond = false;
+    $('stim').style.opacity = 0;
+
+    // regra fim de trial:
+    // - Go sem resposta => miss (erro)
+    // - No-Go sem resposta => correto (inibição)
+    if (wasOpen){
+      if (isGo){
+        errors++;
+        $('feedback').className = 'feedback err';
+        $('feedback').textContent = '✖ Erro (perdeu o verde)';
+      } else {
+        $('feedback').className = 'feedback ok';
+        $('feedback').textContent = '✔ Correto (inibição no vermelho)';
+      }
+      updateHUD();
+    }
+    setTimeout(nextTrial, GAP_MS);
+  }
+
+  function updateHUD(){
+    $('hudHits').textContent = String(hits);
+    $('hudErr').textContent  = String(errors);
+  }
+
+  function finish(){
+    running = false;
+    $('timerG').textContent = '0.0s';
+    $('bar').style.width = '100%';
+    $('stim').style.opacity = 0;
+    $('feedback').className = 'feedback ok';
+    $('feedback').textContent = `✅ Fim! Acertos: ${hits} | Erros: ${errors}`;
+
+    // salva jogada no histórico -> RELATÓRIOS
+    pushHistory('gonogo', {
+      ts: Date.now(),
+      trials: TRIALS,
+      hits: hits,
+      errors: errors,
+      accuracy: (hits / TRIALS) * 100
+    });
+  }
+
+  // tecla (uma vez só)
+  window.addEventListener('keydown', (e)=>{
+    if (!running) {
+      if (e.key === 'Enter') startGame();
+      return;
+    }
+    if (!allowRespond) return; // fora da janela
+
+    if (e.code === 'Space'){
+      allowRespond = false;
+
+      if (isGo){
+        hits++;
+        $('feedback').className = 'feedback ok';
+        $('feedback').textContent = '✔ Acertou!';
+      } else {
+        errors++;
+        $('feedback').className = 'feedback err';
+        $('feedback').textContent = '✖ Erro (apertou no vermelho)';
+      }
+      updateHUD();
+
+      if (timerId){ clearInterval(timerId); timerId = null; }
+      $('stim').style.opacity = 0;
+      setTimeout(nextTrial, GAP_MS);
+    }
+  });
+
+  window.addEventListener('DOMContentLoaded', ()=>{
+    $('btnStart').onclick = startGame;
+  });
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand"><div class="logo"></div><div class="title">Go/No-Go</div></div>
+      <a href="jogos.html" class="btn back">⬅ Jogos</a>
+    </div>
+
+    <div class="card game-wrap">
+      <div class="hud">
+        <span class="badge">Bloco: <b id="hudBlock">1</b></span>
+        <span class="badge">Trial: <b id="hudTrial">0</b> / 20</span>
+        <span class="badge">Acertos: <b id="hudHits">0</b></span>
+        <span class="badge">Erros: <b id="hudErr">0</b></span>
+        <span class="badge">Tempo: <b id="timerG">0.0s</b></span>
+      </div>
+
+      <div class="progress"><div id="bar" class="bar"></div></div>
+
+      <div class="stage"><div id="stim" class="circle">●</div></div>
+      <div class="feedback" id="feedback"></div>
+
+      <div class="controls">
+        <button id="btnStart" class="btn green">▶ Iniciar</button>
+        <span class="muted">Use <kbd>ESPAÇO</kbd> no <b>VERDE</b> • Não aperte no <b>VERMELHO</b> • <kbd>Enter</kbd> inicia</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

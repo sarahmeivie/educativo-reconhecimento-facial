@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stroop</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <script defer>
+  // ===================== Utils =====================
+  const $ = (id)=>document.getElementById(id);
+  function pushHistory(gameKey, sess){
+    const key = 'history_'+gameKey;
+    let arr = [];
+    try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e){ arr = []; }
+    arr.push(sess);
+    if (arr.length > 5) arr = arr.slice(arr.length - 5);
+    localStorage.setItem(key, JSON.stringify(arr));
+  }
+
+  // ===================== Config =====================
+  const COLORS = [
+    { key:'R', name:'vermelho', css:'#dc2626', id:'btnR', label:'Vermelho' },
+    { key:'A', name:'azul',     css:'#2563eb', id:'btnA', label:'Azul'     },
+    { key:'V', name:'verde',    css:'#16a34a', id:'btnV', label:'Verde'    },
+    { key:'M', name:'amarelo',  css:'#f59e0b', id:'btnM', label:'Amarelo'  }
+  ];
+  const TRIALS = 20;
+  const MAX_RESP_MS = 2500; // tempo máximo por trial
+  const GAP_MS = 200;
+
+  // ===================== Estado =====================
+  let running = false;
+  let trial = 0, hits = 0, errors = 0;
+  let countdownId = null, trialEndsAt = 0;
+  let lockInputs = false;
+  let currentColorCss = ''; // cor correta do trial
+
+  const setBtnsEnabled = (on)=>{
+    for (const c of COLORS) $(c.id).disabled = !on;
+  };
+
+  function startStroop(){
+    if (running) return;
+    running = true;
+    trial = 0; hits = 0; errors = 0;
+    $('feedback').textContent = '';
+    $('trial').textContent = '0';
+    $('hits').textContent = '0';
+    $('err').textContent = '0';
+    $('bar').style.width = '0%';
+    setBtnsEnabled(true);
+    nextTrial();
+  }
+
+  function nextTrial(){
+    if (countdownId){ clearInterval(countdownId); countdownId = null; }
+
+    trial++;
+    if (trial > TRIALS){ finish(); return; }
+
+    const wordObj = COLORS[Math.floor(Math.random()*COLORS.length)];
+    const inkObj  = COLORS[Math.floor(Math.random()*COLORS.length)];
+
+    const wordEl = $('word');
+    wordEl.textContent = wordObj.name.toUpperCase();
+    wordEl.style.color = inkObj.css;
+    currentColorCss = inkObj.css;
+
+    $('trial').textContent = String(trial);
+    $('hits').textContent  = String(hits);
+    $('err').textContent   = String(errors);
+    $('bar').style.width = ((trial-1)/TRIALS*100)+'%';
+    $('feedback').textContent = '';
+
+    lockInputs = false;
+    trialEndsAt = performance.now() + MAX_RESP_MS;
+    countdownId = setInterval(()=>{
+      const left = Math.max(0, trialEndsAt - performance.now());
+      $('timerS').textContent = (left/1000).toFixed(1)+'s';
+      if (left <= 0){
+        clearInterval(countdownId); countdownId = null;
+        lockInputs = true;
+        errors++; flash('err');
+        setTimeout(nextTrial, GAP_MS);
+      }
+    }, 50);
+  }
+
+  function answer(colorCss){
+    if (!running || lockInputs) return;
+    if (!countdownId) return;
+    clearInterval(countdownId); countdownId = null;
+    lockInputs = true;
+
+    const ok = (colorCss === currentColorCss);
+    if (ok){ hits++; flash('ok'); } else { errors++; flash('err'); }
+    setTimeout(nextTrial, GAP_MS);
+  }
+
+  function finish(){
+    running = false;
+    setBtnsEnabled(false);
+    $('timerS').textContent = '0.0s';
+    $('bar').style.width = '100%';
+    $('feedback').className = 'feedback ok';
+    $('feedback').textContent = `✅ Fim! Acertos: ${hits} | Erros: ${errors}`;
+
+    pushHistory('stroop', {
+      ts: Date.now(),
+      trials: TRIALS,
+      hits: hits,
+      errors: errors,
+      accuracy: (hits / TRIALS) * 100
+    });
+  }
+
+  function flash(type){
+    const fb = $('feedback');
+    fb.className = 'feedback ' + (type==='ok' ? 'ok' : 'err');
+    fb.textContent = (type==='ok' ? '✔ Correto' : '✖ Errado');
+  }
+
+  window.addEventListener('keydown', (e)=>{
+    if (e.key === 'Enter' && !running) { startStroop(); }
+    if (!running || lockInputs) return;
+    const k = e.key.toLowerCase();
+    if (k === 'r') $('btnR').click();
+    if (k === 'a') $('btnA').click();
+    if (k === 'v') $('btnV').click();
+    if (k === 'm') $('btnM').click();
+  });
+
+  window.addEventListener('DOMContentLoaded', ()=>{
+    setBtnsEnabled(false);
+    $('btnStart').onclick = startStroop;
+    for (const c of COLORS){
+      $(c.id).onclick = ()=>answer(c.css);
+    }
+  });
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand"><div class="logo"></div><div class="title">Stroop</div></div>
+      <a href="jogos.html" class="btn back">⬅ Jogos</a>
+    </div>
+
+    <div class="card game-wrap center">
+      <div class="hud">
+        <span class="badge">Trial: <b id="trial">0</b> / 20</span>
+        <span class="badge">Acertos: <b id="hits">0</b></span>
+        <span class="badge">Erros: <b id="err">0</b></span>
+        <span class="badge">Tempo: <b id="timerS">0.0s</b></span>
+      </div>
+
+      <div class="progress"><div id="bar" class="bar"></div></div>
+
+      <div class="stage"><div id="word" class="word">PRONTO?</div></div>
+      <div class="feedback" id="feedback"></div>
+
+      <div class="controls">
+        <button id="btnStart" class="btn green">▶ Iniciar</button>
+        <button id="btnR" class="btn" style="background:#dc2626;color:#fff">Vermelho (R)</button>
+        <button id="btnA" class="btn" style="background:#2563eb;color:#fff">Azul (A)</button>
+        <button id="btnV" class="btn" style="background:#16a34a;color:#fff">Verde (V)</button>
+        <button id="btnM" class="btn" style="background:#f59e0b;color:#111827">Amarelo (M)</button>
+      </div>
+
+      <p class="muted">
+        Legenda: <b>R</b>=Vermelho • <b>A</b>=Azul • <b>V</b>=Verde • <b>M</b>=Amarelo &nbsp;|&nbsp;
+        <kbd>Enter</kbd> inicia • Regra: responda a <b>cor da tinta</b>, não a palavra.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

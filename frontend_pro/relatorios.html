@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relatórios</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <style>
+    /* Tabs simples */
+    .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap }
+    .tabbtn { padding:10px 14px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:600 }
+    .tabbtn.active { background:linear-gradient(135deg,#2563eb,#60a5fa); color:#fff; border:none }
+    .tab { display:none }
+    .tab.active { display:block }
+    table.table { width:100%; border-collapse:collapse; margin-top:8px }
+    .table th,.table td { border-bottom:1px solid #e5e7eb; padding:10px; text-align:left }
+    .actions { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap }
+  </style>
+  <script defer>
+  const GAMES = [
+    {key:'gonogo',  label:'Go/No-Go'},
+    {key:'stroop',  label:'Stroop'},
+    {key:'nback',   label:'N-Back 1'}
+  ];
+
+  const $ = id => document.getElementById(id);
+
+  function loadHist(key){
+    const raw = localStorage.getItem('history_'+key);
+    try { return raw ? JSON.parse(raw) : []; } catch { return []; }
+  }
+  function saveHist(key, arr){
+    localStorage.setItem('history_'+key, JSON.stringify(arr));
+  }
+  function clearHist(key){
+    localStorage.removeItem('history_'+key);
+    render();
+  }
+  function clearAll(){
+    for (const g of GAMES) localStorage.removeItem('history_'+g.key);
+    render();
+  }
+
+  function renderTable(tbody, arr){
+    if (!arr.length){
+      tbody.innerHTML = `<tr><td colspan="6">Sem jogadas salvas ainda.</td></tr>`;
+      return;
+    }
+    // mais recente primeiro
+    const rows = arr
+      .slice() // cópia
+      .reverse()
+      .map((sess, idx) => `
+        <tr>
+          <td>Jogada ${arr.length - idx}</td>
+          <td>${new Date(sess.ts).toLocaleString()}</td>
+          <td>${sess.trials}</td>
+          <td>${sess.hits}</td>
+          <td>${sess.errors}</td>
+          <td>${sess.accuracy.toFixed(1)}%</td>
+        </tr>
+      `).join('');
+    tbody.innerHTML = rows;
+  }
+
+  function render(){
+    // Abas
+    for (const g of GAMES){
+      const arr = loadHist(g.key);
+      renderTable($('tbody_'+g.key), arr);
+      // contador no título
+      $('count_'+g.key).textContent = arr.length;
+    }
+  }
+
+  function makeActive(key){
+    for (const g of GAMES){
+      $('tabbtn_'+g.key).classList.toggle('active', g.key===key);
+      $('tab_'+g.key).classList.toggle('active', g.key===key);
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', ()=>{
+    // montar handlers
+    for (const g of GAMES){
+      $('tabbtn_'+g.key).onclick = ()=>makeActive(g.key);
+      $('clear_'+g.key).onclick  = ()=>clearHist(g.key);
+    }
+    $('clear_all').onclick = clearAll;
+
+    render();
+    makeActive('gonogo'); // abre primeira aba
+  });
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand"><div class="logo"></div><div class="title">Relatórios</div></div>
+      <a href="index.html" class="btn back">⬅ Início</a>
+    </div>
+
+    <div class="card">
+      <h2 class="center">Histórico por jogo</h2>
+
+      <!-- Botões de abas -->
+      <div class="tabs center">
+        <button id="tabbtn_gonogo" class="tabbtn">Go/No-Go (<span id="count_gonogo">0</span>)</button>
+        <button id="tabbtn_stroop" class="tabbtn">Stroop (<span id="count_stroop">0</span>)</button>
+        <button id="tabbtn_nback"  class="tabbtn">N-Back 1 (<span id="count_nback">0</span>)</button>
+      </div>
+
+      <!-- Aba: Go/No-Go -->
+      <div id="tab_gonogo" class="tab">
+        <h3>Go/No-Go</h3>
+        <table class="table">
+          <thead>
+            <tr><th>Jogada</th><th>Data/Hora</th><th>Trials</th><th>Acertos</th><th>Erros</th><th>Acurácia</th></tr>
+          </thead>
+          <tbody id="tbody_gonogo"></tbody>
+        </table>
+        <div class="actions">
+          <button id="clear_gonogo" class="btn back">🗑️ Limpar Go/No-Go</button>
+        </div>
+      </div>
+
+      <!-- Aba: Stroop -->
+      <div id="tab_stroop" class="tab">
+        <h3>Stroop</h3>
+        <table class="table">
+          <thead>
+            <tr><th>Jogada</th><th>Data/Hora</th><th>Trials</th><th>Acertos</th><th>Erros</th><th>Acurácia</th></tr>
+          </thead>
+          <tbody id="tbody_stroop"></tbody>
+        </table>
+        <div class="actions">
+          <button id="clear_stroop" class="btn back">🗑️ Limpar Stroop</button>
+        </div>
+      </div>
+
+      <!-- Aba: N-Back -->
+      <div id="tab_nback" class="tab">
+        <h3>N-Back 1</h3>
+        <table class="table">
+          <thead>
+            <tr><th>Jogada</th><th>Data/Hora</th><th>Trials</th><th>Acertos</th><th>Erros</th><th>Acurácia</th></tr>
+          </thead>
+          <tbody id="tbody_nback"></tbody>
+        </table>
+        <div class="actions">
+          <button id="clear_nback" class="btn back">🗑️ Limpar N-Back</button>
+        </div>
+      </div>
+
+      <div class="actions" style="justify-content:flex-end">
+        <button id="clear_all" class="btn">🗑️ Limpar TUDO</button>
+      </div>
+
+      <p class="muted">Mantemos até 5 jogadas mais recentes por jogo (armazenadas no seu navegador).</p>
+    </div>
+  </div>
+</body>
+</html>
