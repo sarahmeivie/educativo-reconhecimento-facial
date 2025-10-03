@@ -6,11 +6,404 @@
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
+  <script>
+  // =================== CONFIG BÁSICA ===================
+  const CLICKS_PER_POINT = 5;
+  const EMA_ALPHA = 0.35;
+  const SHOW_PRED_POINTS = false;
+
+  // =================== ESTADO GERAL ===================
+  let calibrationRunning = false;
+  let points = [];
+  let pIndex = 0;
+  let clickCount = 0;
+  let emaX = null, emaY = null;
+  let showPreview = false;
+
+  // Regiões
+  let centerPct = 0.50;
+  let dwellThresholdMs = 250;
+
+  let curRegion = null, candRegion = null, candSince = 0;
+  let lastTs = performance.now();
+  const dwellTotals = { LEFT:0, CENTER:0, RIGHT:0 };
+  const eventLog = []; // mudanças de região
+
+  // Emoções
+  const EMOT = { HAPPY: 'FELIZ', SAD: 'TRISTE', BORED: 'TÉDIO', NEUTRAL: 'NEUTRO' };
+  let curEmotion = null;
+  const emotionTotals = { FELIZ:0, TRISTE:0, TÉDIO:0, NEUTRO:0 };
+  let neutralSince = 0;
+  let boredThresholdMs = 5000;
+
+  // JSON saída
+  function getPercent(ms, total) { return total > 0 ? (ms / total * 100) : 0; }
+  function getJSONSummary() {
+    const totalRegionMs = dwellTotals.LEFT + dwellTotals.CENTER + dwellTotals.RIGHT;
+    const totalEmotionMs = emotionTotals['FELIZ'] + emotionTotals['TRISTE'] + emotionTotals['TÉDIO'] + emotionTotals['NEUTRO'];
+    return {
+      regions: {
+        leftPct:   +getPercent(dwellTotals.LEFT, totalRegionMs).toFixed(2),
+        centerPct: +getPercent(dwellTotals.CENTER, totalRegionMs).toFixed(2),
+        rightPct:  +getPercent(dwellTotals.RIGHT, totalRegionMs).toFixed(2),
+        totalMs:   Math.round(totalRegionMs)
+      },
+      emotions: {
+        happyPct:  +getPercent(emotionTotals['FELIZ'],  totalEmotionMs).toFixed(2),
+        sadPct:    +getPercent(emotionTotals['TRISTE'], totalEmotionMs).toFixed(2),
+        boredPct:  +getPercent(emotionTotals['TÉDIO'],  totalEmotionMs).toFixed(2),
+        neutralPct:+getPercent(emotionTotals['NEUTRO'], totalEmotionMs).toFixed(2),
+        totalMs:   Math.round(totalEmotionMs)
+      },
+      current: { region: curRegion ?? null, emotion: curEmotion ?? null },
+      timestamps: { updatedAt: new Date().toISOString() }
+    };
+  }
+
+  // =================== ELEMENTOS ===================
+  const statusEl = document.getElementById('status');
+  const btnCalib = document.getElementById('btnCalibrate');
+  const btnRecalib = document.getElementById('btnRecalibrate');
+  const btnTogglePreview = document.getElementById('btnTogglePreview');
+  const btnExportCSV = document.getElementById('btnExportCSV');
+  const btnExportJSON = document.getElementById('btnExportJSON');
+  const btnCopyJSON = document.getElementById('btnCopyJSON');
+  const btnToggleJSON = document.getElementById('btnToggleJSON');
+  const btnAnalyzeAI = document.getElementById('btnAnalyzeAI');
+
+  const calibPoint = document.getElementById('calibPoint');
+  const calibRing  = document.getElementById('calibRing');
+  const gazeDot    = document.getElementById('gazeDot');
+
+  const samplesEl  = document.getElementById('samples');
+  const pidxEl     = document.getElementById('pidx');
+  const ptotalEl   = document.getElementById('ptotal');
+  const curRegionEl= document.getElementById('curRegion');
+  const curDwellEl = document.getElementById('curDwell');
+  const tLeftEl    = document.getElementById('tLeft');
+  const tCenterEl  = document.getElementById('tCenter');
+  const tRightEl   = document.getElementById('tRight');
+
+  const curEmotionEl = document.getElementById('curEmotion');
+  const eHappyEl  = document.getElementById('eHappy');
+  const eSadEl    = document.getElementById('eSad');
+  const eBoredEl  = document.getElementById('eBored');
+  const eNeutralEl= document.getElementById('eNeutral');
+
+  const regionLeft  = document.getElementById('regionLeft');
+  const regionCenter= document.getElementById('regionCenter');
+  const regionRight = document.getElementById('regionRight');
+
+  const inpCenterPct= document.getElementById('inpCenterPct');
+  const inpDwellMs  = document.getElementById('inpDwellMs');
+  const inpBoredMs  = document.getElementById('inpBoredMs');
+
+  const jsonOut = document.getElementById('jsonOut');
+  const jsonBox = document.getElementById('jsonBox');
+
+  // =================== FUNÇÕES AUXILIARES ===================
+  function setStatus(msg) { statusEl.textContent = msg; }
+  function layoutRegions() {
+    const w = window.innerWidth;
+    const centerW = Math.max(0.2, Math.min(0.8, centerPct)) * w;
+    const sideW = (w - centerW) / 2;
+    regionLeft.style.left = '0px'; regionLeft.style.width = sideW + 'px';
+    regionCenter.style.left = sideW + 'px'; regionCenter.style.width = centerW + 'px';
+    regionRight.style.left = (sideW + centerW) + 'px'; regionRight.style.width = sideW + 'px';
+  }
+  function whichRegion(x) {
+    const w = window.innerWidth;
+    const centerW = Math.max(0.2, Math.min(0.8, centerPct)) * w;
+    const sideW = (w - centerW) / 2;
+    if (x < sideW) return 'LEFT';
+    if (x > sideW + centerW) return 'RIGHT';
+    return 'CENTER';
+  }
+  function setActiveRegionUI(regionId) {
+    regionLeft.classList.toggle('active', regionId==='LEFT');
+    regionCenter.classList.toggle('active', regionId==='CENTER');
+    regionRight.classList.toggle('active', regionId==='RIGHT');
+    curRegionEl.textContent = regionId ?? '–';
+  }
+  function updateRegionHUD() {
+    tLeftEl.textContent   = dwellTotals.LEFT.toFixed(0);
+    tCenterEl.textContent = dwellTotals.CENTER.toFixed(0);
+    tRightEl.textContent  = dwellTotals.RIGHT.toFixed(0);
+  }
+  function updateEmotionHUD() {
+    eHappyEl.textContent   = emotionTotals['FELIZ'].toFixed(0);
+    eSadEl.textContent     = emotionTotals['TRISTE'].toFixed(0);
+    eBoredEl.textContent   = emotionTotals['TÉDIO'].toFixed(0);
+    eNeutralEl.textContent = emotionTotals['NEUTRO'].toFixed(0);
+    curEmotionEl.textContent = curEmotion ?? '–';
+  }
+  function logRegionChange(newRegion, x, y) {
+    eventLog.push({ ts: Date.now(), region: newRegion, x: Math.round(x), y: Math.round(y) });
+  }
+  function exportCSV() {
+    const rows = [
+      ['timestamp_ms','iso_datetime','region','x','y'],
+      ...eventLog.map(e => [e.ts, new Date(e.ts).toISOString(), e.region, e.x, e.y])
+    ];
+    const csv = rows.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'gaze_region_events.csv';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+  function exportJSON() {
+    const obj = getJSONSummary();
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'gaze_summary.json';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+  function copyJSON() {
+    const obj = getJSONSummary();
+    navigator.clipboard.writeText(JSON.stringify(obj, null, 2)).then(()=> {
+      setStatus('JSON copiado para a área de transferência.');
+    }).catch(()=>{ setStatus('Não foi possível copiar o JSON.'); });
+  }
+  function refreshJSONBox() {
+    jsonOut.textContent = JSON.stringify(getJSONSummary(), null, 2);
+  }
+
+// =================== CALIBRAÇÃO ===================
+function makeGridPoints() {
+      const w = window.innerWidth, h = window.innerHeight;
+      return [
+        {x: 0.10*w, y: 0.10*h}, {x: 0.50*w, y: 0.10*h}, {x: 0.90*w, y: 0.10*h},
+        {x: 0.10*w, y: 0.50*h}, {x: 0.50*w, y: 0.50*h}, {x: 0.90*w, y: 0.50*h},
+        {x: 0.10*w, y: 0.90*h}, {x: 0.50*w, y: 0.90*h}, {x: 0.90*w, y: 0.90*h},
+      ];
+    }
+    function showTarget(x, y) {
+      calibPoint.style.left = x + 'px'; calibPoint.style.top = y + 'px';
+      calibRing.style.left = x + 'px';  calibRing.style.top = y + 'px';
+      calibPoint.style.display = 'block'; calibRing.style.display = 'block';
+    }
+    function hideTarget() { calibPoint.style.display = 'none'; calibRing.style.display = 'none'; }
+
+    async function startCalibration() {
+      if (calibrationRunning) return;
+      calibrationRunning = true;
+
+      emaX = emaY = null;
+      points = makeGridPoints();
+      pIndex = 0; ptotalEl.textContent = points.length; samplesEl.textContent = '0'; pidxEl.textContent = '1'; clickCount = 0;
+
+      gazeDot.style.display = 'none';
+      webgazer.showPredictionPoints(false);
+      setStatus('Calibração: olhe e clique 5× em cada alvo.');
+
+      window.addEventListener('click', onCalibClick, true);
+      nextPoint();
+    }
+    function onCalibClick() {
+      if (!calibrationRunning) return;
+      if (calibPoint.style.display !== 'block') return;
+      const p = points[pIndex];
+      webgazer.recordScreenPosition(p.x, p.y, 'click');
+      clickCount++; samplesEl.textContent = String(parseInt(samplesEl.textContent) + 1);
+      if (clickCount >= CLICKS_PER_POINT) {
+        pIndex++; clickCount = 0;
+        if (pIndex < points.length) { pidxEl.textContent = String(pIndex + 1); nextPoint(); }
+        else { finishCalibration(); }
+      }
+    }
+    function nextPoint() { const p = points[pIndex]; showTarget(p.x, p.y); }
+    async function finishCalibration() {
+      window.removeEventListener('click', onCalibClick, true);
+      hideTarget(); setStatus('Treinando modelo…');
+      try { await webgazer.train(); } catch (e) { console.error('train():', e); }
+      setStatus('Calibração concluída!'); gazeDot.style.display = 'block';
+      webgazer.showPredictionPoints(SHOW_PRED_POINTS);
+      calibrationRunning = false;
+    }
+    async function resetAndRecalibrate() {
+      try { await webgazer.clearData(); } catch(e) {}
+      curRegion = candRegion = null; candSince = 0;
+      dwellTotals.LEFT = dwellTotals.CENTER = dwellTotals.RIGHT = 0;
+      setActiveRegionUI(null); updateRegionHUD(); eventLog.length = 0;
+
+      curEmotion = null; neutralSince = 0;
+      emotionTotals['FELIZ'] = emotionTotals['TRISTE'] = emotionTotals['TÉDIO'] = emotionTotals['NEUTRO'] = 0;
+      updateEmotionHUD();
+
+      setStatus('Dados limpos. Inicie nova calibração.');
+      startCalibration();
+    }
+
+    // =================== EMOÇÕES ===================
+    let faceapiReady = false, useFaceAPI = false;
+    async function initFaceAPI() {
+      try {
+        const modelURL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+        await faceapi.nets.tinyFaceDetector.loadFromUri(modelURL);
+        await faceapi.nets.faceExpressionNet.loadFromUri(modelURL);
+        useFaceAPI = true; faceapiReady = true;
+        setStatus('Modelos de emoção carregados.');
+      } catch (e) {
+        console.warn('face-api: não carregou modelos.', e);
+        useFaceAPI = false; faceapiReady = false;
+        setStatus('Emoções: modo heurístico.');
+      }
+    }
+
+    async function emotionLoop() {
+      const video = webgazer.getVideoElement ? webgazer.getVideoElement() : null;
+      if (video && useFaceAPI && faceapiReady) {
+        try {
+          const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })).withFaceExpressions();
+          if (det && det.expressions) {
+            const ex = det.expressions;
+            const isHappy = (ex.happy || 0) >= 0.6;
+            const isSad   = (ex.sad || 0)   >= 0.5;
+            const isNeutral = (ex.neutral || 0) >= 0.6 && !isHappy && !isSad;
+
+            let nextEmotion = EMOT.NEUTRO;
+            if (isHappy) nextEmotion = EMOT.HAPPY;
+            else if (isSad) nextEmotion = EMOT.SAD;
+            else if (isNeutral) nextEmotion = EMOT.NEUTRO;
+
+            const now = performance.now();
+            if (nextEmotion === EMOT.NEUTRO) {
+              if (neutralSince === 0) neutralSince = now;
+              if ((now - neutralSince) >= boredThresholdMs) nextEmotion = EMOT.BORED;
+            } else {
+              neutralSince = 0;
+            }
+            curEmotion = nextEmotion;
+            updateEmotionHUD();
+          }
+        } catch (e) {
+          useFaceAPI = false;
+        }
+      }
+      setTimeout(emotionLoop, 200);
+    }
+
+    // =================== INICIALIZAÇÃO ===================
+    window.addEventListener('load', async () => {
+      layoutRegions();
+      webgazer
+        .setRegression('ridge')
+        .setGazeListener((data) => {
+          if (!data) return;
+          const now = performance.now();
+          const delta = now - lastTs;
+          lastTs = now;
+
+          if (emaX === null) { emaX = data.x; emaY = data.y; }
+          else { emaX = EMA_ALPHA * data.x + (1 - EMA_ALPHA) * emaX;
+                emaY = EMA_ALPHA * data.y + (1 - EMA_ALPHA) * emaY; }
+
+          gazeDot.style.left = emaX + 'px'; gazeDot.style.top  = emaY + 'px';
+
+          if (curRegion) { dwellTotals[curRegion] += delta; updateRegionHUD(); }
+
+          const rNow = whichRegion(emaX);
+          if (candRegion !== rNow) { candRegion = rNow; candSince = now; }
+          curDwellEl.textContent = Math.max(0, Math.round(now - candSince));
+          if (curRegion !== candRegion && (now - candSince) >= dwellThresholdMs) {
+            curRegion = candRegion; setActiveRegionUI(curRegion); logRegionChange(curRegion, emaX, emaY);
+          }
+
+          if (curEmotion) {
+            emotionTotals[curEmotion] += delta;
+            updateEmotionHUD();
+          }
+
+          refreshJSONBox();
+        });
+
+      webgazer.showVideo(false);
+      webgazer.showFaceOverlay(false);
+      webgazer.showFaceFeedbackBox(false);
+      webgazer.showPredictionPoints(false);
+
+      try {
+        await webgazer.begin();
+        setStatus('Clique em “Calibrar” e siga as instruções.');
+      } catch (err) {
+        console.error(err);
+        setStatus('Erro ao iniciar a câmera. Verifique permissões/HTTPS.');
+        alert('Erro ao acessar a câmera. Verifique permissões e HTTPS.');
+      }
+
+      initFaceAPI().then(() => emotionLoop());
+    });
+
+    // =================== FUNÇÃO IA ===================
+    async function analisarComIA() {
+      const resumo = getJSONSummary();
+      const prompt = `
+      Analise os seguintes dados de rastreamento ocular:
+
+      ${JSON.stringify(resumo, null, 2)}
+
+      Explique:
+      - Distribuição do olhar (esq/centro/dir).
+      - Se há foco ou distração.
+      - Possíveis interpretações cognitivas.
+      - Recomendações práticas.
+      `;
+
+      try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer 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" // 👉 coloque sua chave aqui
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prompt }]
+          })
+        });
+
+        const data = await response.json();
+        const output = data.choices?.[0]?.message?.content || "Sem resposta da IA.";
+        alert("📊 Análise da IA:\n\n" + output);
+      } catch (err) {
+        console.error(err);
+        alert("Erro ao conectar com a IA.");
+      }
+    }
+
+    // =================== EVENTOS UI ===================
+    btnCalib.addEventListener('click', startCalibration);
+    btnRecalib.addEventListener('click', resetAndRecalibrate);
+    btnTogglePreview.addEventListener('click', () => {
+      showPreview = !showPreview;
+      webgazer.showVideo(showPreview);
+      webgazer.showFaceOverlay(showPreview);
+      webgazer.showFaceFeedbackBox(showPreview);
+      btnTogglePreview.textContent = showPreview ? 'Ocultar vídeo' : 'Mostrar vídeo';
+    });
+    btnExportCSV.addEventListener('click', exportCSV);
+    btnExportJSON.addEventListener('click', exportJSON);
+    btnCopyJSON.addEventListener('click', copyJSON);
+    btnToggleJSON.addEventListener('click', () => {
+      const on = jsonBox.style.display !== 'none';
+      jsonBox.style.display = on ? 'none' : 'block';
+      btnToggleJSON.textContent = on ? 'Mostrar' : 'Ocultar';
+    });
+    btnAnalyzeAI.addEventListener('click', analisarComIA);
+
+    window.addEventListener('resize', () => { layoutRegions(); });
+    inpCenterPct.addEventListener('change', () => { centerPct = parseFloat(inpCenterPct.value)/100; layoutRegions(); });
+    inpDwellMs.addEventListener('change', () => { dwellThresholdMs = Math.max(50, parseInt(inpDwellMs.value,10)||250); });
+    inpBoredMs.addEventListener('change', () => { boredThresholdMs = Math.max(1000, parseInt(inpBoredMs.value,10)||5000); });
+  </script>
+  
   <div class="container">
     <div class="header">
       <div class="brand"><div class="logo"></div><div class="title">Neuro Games</div></div>
       <a href="relatorios.html" class="btn ghost">📑 Relatórios</a>
-      <a href="gaze-detector.html" class="btn ghost">👁️ Gaze Detector</a>
+      <a href="gaze_detector.html" class="btn ghost">👁️ Gaze Detector</a>
     </div>
     <div class="hero card center">
       <h1>🧠 Bem-vindo(a) ao Neuro Games</h1>
