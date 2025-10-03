@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Gaze Detection</title>
+</head>
+<body>
+  <h1>Olhe para a tela :)</h1>
+
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <script>
+    // Inicia o WebGazer
+    webgazer.setGazeListener(function(data, elapsedTime) {
+      if (data == null) return;
+
+      const x = data.x; // Coordenada X na tela
+      const y = data.y; // Coordenada Y na tela
+
+      console.log("Olhar em:", x, y);
+    }).begin();
+
+
+  </script>
+</body>
+</html>
