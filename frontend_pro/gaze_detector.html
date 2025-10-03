@@ -69,7 +69,7 @@
     <button class="btn ghost" id="btnTogglePreview">Mostrar vídeo</button>
     <button class="btn warn" id="btnExportCSV">Exportar CSV (regiões)</button>
     <button class="btn ghost" id="btnExportJSON">Exportar JSON (%)</button>
-    <button class="btn ghost" id="btnAnalyzeAI">Analisar com IA</button>
+    <button class="btn ghost" id="btnAnalyzeAI">Analisar (local)</button>
     <a class="btn ghost" href="./index.html">Voltar</a>
     <div id="status"></div>
   </header>
@@ -114,11 +114,12 @@
     <div>Neutro→Tédio (ms seguidos):</div>
     <div><input id="inpBoredMs" type="number" min="1000" step="500" value="5000"></div>
   </div>
-<!-- Libs -->
-<script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.min.js"></script>
 
-<script>
+  <!-- Libs -->
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.min.js"></script>
+
+  <script>
   // =================== CONFIG BÁSICA ===================
   const CLICKS_PER_POINT = 5;
   const EMA_ALPHA = 0.35;
@@ -282,233 +283,284 @@
     jsonOut.textContent = JSON.stringify(getJSONSummary(), null, 2);
   }
 
-// =================== CALIBRAÇÃO ===================
-function makeGridPoints() {
-      const w = window.innerWidth, h = window.innerHeight;
-      return [
-        {x: 0.10*w, y: 0.10*h}, {x: 0.50*w, y: 0.10*h}, {x: 0.90*w, y: 0.10*h},
-        {x: 0.10*w, y: 0.50*h}, {x: 0.50*w, y: 0.50*h}, {x: 0.90*w, y: 0.50*h},
-        {x: 0.10*w, y: 0.90*h}, {x: 0.50*w, y: 0.90*h}, {x: 0.90*w, y: 0.90*h},
-      ];
+  // =================== CALIBRAÇÃO ===================
+  function makeGridPoints() {
+    const w = window.innerWidth, h = window.innerHeight;
+    return [
+      {x: 0.10*w, y: 0.10*h}, {x: 0.50*w, y: 0.10*h}, {x: 0.90*w, y: 0.10*h},
+      {x: 0.10*w, y: 0.50*h}, {x: 0.50*w, y: 0.50*h}, {x: 0.90*w, y: 0.50*h},
+      {x: 0.10*w, y: 0.90*h}, {x: 0.50*w, y: 0.90*h}, {x: 0.90*w, y: 0.90*h},
+    ];
+  }
+  function showTarget(x, y) {
+    calibPoint.style.left = x + 'px'; calibPoint.style.top = y + 'px';
+    calibRing.style.left = x + 'px';  calibRing.style.top = y + 'px';
+    calibPoint.style.display = 'block'; calibRing.style.display = 'block';
+  }
+  function hideTarget() { calibPoint.style.display = 'none'; calibRing.style.display = 'none'; }
+
+  async function startCalibration() {
+    if (calibrationRunning) return;
+    calibrationRunning = true;
+
+    emaX = emaY = null;
+    points = makeGridPoints();
+    pIndex = 0; ptotalEl.textContent = points.length; samplesEl.textContent = '0'; pidxEl.textContent = '1'; clickCount = 0;
+
+    gazeDot.style.display = 'none';
+    webgazer.showPredictionPoints(false);
+    setStatus('Calibração: olhe e clique 5× em cada alvo.');
+
+    window.addEventListener('click', onCalibClick, true);
+    nextPoint();
+  }
+  function onCalibClick() {
+    if (!calibrationRunning) return;
+    if (calibPoint.style.display !== 'block') return;
+    const p = points[pIndex];
+    webgazer.recordScreenPosition(p.x, p.y, 'click');
+    clickCount++; samplesEl.textContent = String(parseInt(samplesEl.textContent) + 1);
+    if (clickCount >= CLICKS_PER_POINT) {
+      pIndex++; clickCount = 0;
+      if (pIndex < points.length) { pidxEl.textContent = String(pIndex + 1); nextPoint(); }
+      else { finishCalibration(); }
     }
-    function showTarget(x, y) {
-      calibPoint.style.left = x + 'px'; calibPoint.style.top = y + 'px';
-      calibRing.style.left = x + 'px';  calibRing.style.top = y + 'px';
-      calibPoint.style.display = 'block'; calibRing.style.display = 'block';
+  }
+  function nextPoint() { const p = points[pIndex]; showTarget(p.x, p.y); }
+  async function finishCalibration() {
+    window.removeEventListener('click', onCalibClick, true);
+    hideTarget(); setStatus('Treinando modelo…');
+    try { await webgazer.train(); } catch (e) { console.error('train():', e); }
+    setStatus('Calibração concluída!'); gazeDot.style.display = 'block';
+    webgazer.showPredictionPoints(SHOW_PRED_POINTS);
+    calibrationRunning = false;
+  }
+  async function resetAndRecalibrate() {
+    try { await webgazer.clearData(); } catch(e) {}
+    curRegion = candRegion = null; candSince = 0;
+    dwellTotals.LEFT = dwellTotals.CENTER = dwellTotals.RIGHT = 0;
+    setActiveRegionUI(null); updateRegionHUD(); eventLog.length = 0;
+
+    curEmotion = null; neutralSince = 0;
+    emotionTotals['FELIZ'] = emotionTotals['TRISTE'] = emotionTotals['TÉDIO'] = emotionTotals['NEUTRO'] = 0;
+    updateEmotionHUD();
+
+    setStatus('Dados limpos. Inicie nova calibração.');
+    startCalibration();
+  }
+
+  // =================== EMOÇÕES ===================
+  let faceapiReady = false, useFaceAPI = false;
+  async function initFaceAPI() {
+    try {
+      const modelURL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+      await faceapi.nets.tinyFaceDetector.loadFromUri(modelURL);
+      await faceapi.nets.faceExpressionNet.loadFromUri(modelURL);
+      useFaceAPI = true; faceapiReady = true;
+      setStatus('Modelos de emoção carregados.');
+    } catch (e) {
+      console.warn('face-api: não carregou modelos.', e);
+      useFaceAPI = false; faceapiReady = false;
+      setStatus('Emoções: modo heurístico.');
     }
-    function hideTarget() { calibPoint.style.display = 'none'; calibRing.style.display = 'none'; }
+  }
 
-    async function startCalibration() {
-      if (calibrationRunning) return;
-      calibrationRunning = true;
-
-      emaX = emaY = null;
-      points = makeGridPoints();
-      pIndex = 0; ptotalEl.textContent = points.length; samplesEl.textContent = '0'; pidxEl.textContent = '1'; clickCount = 0;
-
-      gazeDot.style.display = 'none';
-      webgazer.showPredictionPoints(false);
-      setStatus('Calibração: olhe e clique 5× em cada alvo.');
-
-      window.addEventListener('click', onCalibClick, true);
-      nextPoint();
-    }
-    function onCalibClick() {
-      if (!calibrationRunning) return;
-      if (calibPoint.style.display !== 'block') return;
-      const p = points[pIndex];
-      webgazer.recordScreenPosition(p.x, p.y, 'click');
-      clickCount++; samplesEl.textContent = String(parseInt(samplesEl.textContent) + 1);
-      if (clickCount >= CLICKS_PER_POINT) {
-        pIndex++; clickCount = 0;
-        if (pIndex < points.length) { pidxEl.textContent = String(pIndex + 1); nextPoint(); }
-        else { finishCalibration(); }
-      }
-    }
-    function nextPoint() { const p = points[pIndex]; showTarget(p.x, p.y); }
-    async function finishCalibration() {
-      window.removeEventListener('click', onCalibClick, true);
-      hideTarget(); setStatus('Treinando modelo…');
-      try { await webgazer.train(); } catch (e) { console.error('train():', e); }
-      setStatus('Calibração concluída!'); gazeDot.style.display = 'block';
-      webgazer.showPredictionPoints(SHOW_PRED_POINTS);
-      calibrationRunning = false;
-    }
-    async function resetAndRecalibrate() {
-      try { await webgazer.clearData(); } catch(e) {}
-      curRegion = candRegion = null; candSince = 0;
-      dwellTotals.LEFT = dwellTotals.CENTER = dwellTotals.RIGHT = 0;
-      setActiveRegionUI(null); updateRegionHUD(); eventLog.length = 0;
-
-      curEmotion = null; neutralSince = 0;
-      emotionTotals['FELIZ'] = emotionTotals['TRISTE'] = emotionTotals['TÉDIO'] = emotionTotals['NEUTRO'] = 0;
-      updateEmotionHUD();
-
-      setStatus('Dados limpos. Inicie nova calibração.');
-      startCalibration();
-    }
-
-    // =================== EMOÇÕES ===================
-    let faceapiReady = false, useFaceAPI = false;
-    async function initFaceAPI() {
+  async function emotionLoop() {
+    const video = webgazer.getVideoElement ? webgazer.getVideoElement() : null;
+    if (video && useFaceAPI && faceapiReady) {
       try {
-        const modelURL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-        await faceapi.nets.tinyFaceDetector.loadFromUri(modelURL);
-        await faceapi.nets.faceExpressionNet.loadFromUri(modelURL);
-        useFaceAPI = true; faceapiReady = true;
-        setStatus('Modelos de emoção carregados.');
-      } catch (e) {
-        console.warn('face-api: não carregou modelos.', e);
-        useFaceAPI = false; faceapiReady = false;
-        setStatus('Emoções: modo heurístico.');
-      }
-    }
+        const det = await faceapi
+          .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 }))
+          .withFaceExpressions();
+        if (det && det.expressions) {
+          const ex = det.expressions;
+          const isHappy = (ex.happy || 0) >= 0.6;
+          const isSad   = (ex.sad || 0)   >= 0.5;
+          const isNeutral = (ex.neutral || 0) >= 0.6 && !isHappy && !isSad;
 
-    async function emotionLoop() {
-      const video = webgazer.getVideoElement ? webgazer.getVideoElement() : null;
-      if (video && useFaceAPI && faceapiReady) {
-        try {
-          const det = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })).withFaceExpressions();
-          if (det && det.expressions) {
-            const ex = det.expressions;
-            const isHappy = (ex.happy || 0) >= 0.6;
-            const isSad   = (ex.sad || 0)   >= 0.5;
-            const isNeutral = (ex.neutral || 0) >= 0.6 && !isHappy && !isSad;
+          let nextEmotion = EMOT.NEUTRO;
+          if (isHappy) nextEmotion = EMOT.HAPPY;
+          else if (isSad) nextEmotion = EMOT.SAD;
+          else if (isNeutral) nextEmotion = EMOT.NEUTRO;
 
-            let nextEmotion = EMOT.NEUTRO;
-            if (isHappy) nextEmotion = EMOT.HAPPY;
-            else if (isSad) nextEmotion = EMOT.SAD;
-            else if (isNeutral) nextEmotion = EMOT.NEUTRO;
-
-            const now = performance.now();
-            if (nextEmotion === EMOT.NEUTRO) {
-              if (neutralSince === 0) neutralSince = now;
-              if ((now - neutralSince) >= boredThresholdMs) nextEmotion = EMOT.BORED;
-            } else {
-              neutralSince = 0;
-            }
-            curEmotion = nextEmotion;
-            updateEmotionHUD();
-          }
-        } catch (e) {
-          useFaceAPI = false;
-        }
-      }
-      setTimeout(emotionLoop, 200);
-    }
-
-    // =================== INICIALIZAÇÃO ===================
-    window.addEventListener('load', async () => {
-      layoutRegions();
-      webgazer
-        .setRegression('ridge')
-        .setGazeListener((data) => {
-          if (!data) return;
           const now = performance.now();
-          const delta = now - lastTs;
-          lastTs = now;
-
-          if (emaX === null) { emaX = data.x; emaY = data.y; }
-          else { emaX = EMA_ALPHA * data.x + (1 - EMA_ALPHA) * emaX;
-                emaY = EMA_ALPHA * data.y + (1 - EMA_ALPHA) * emaY; }
-
-          gazeDot.style.left = emaX + 'px'; gazeDot.style.top  = emaY + 'px';
-
-          if (curRegion) { dwellTotals[curRegion] += delta; updateRegionHUD(); }
-
-          const rNow = whichRegion(emaX);
-          if (candRegion !== rNow) { candRegion = rNow; candSince = now; }
-          curDwellEl.textContent = Math.max(0, Math.round(now - candSince));
-          if (curRegion !== candRegion && (now - candSince) >= dwellThresholdMs) {
-            curRegion = candRegion; setActiveRegionUI(curRegion); logRegionChange(curRegion, emaX, emaY);
+          if (nextEmotion === EMOT.NEUTRO) {
+            if (neutralSince === 0) neutralSince = now;
+            if ((now - neutralSince) >= boredThresholdMs) nextEmotion = EMOT.BORED;
+          } else {
+            neutralSince = 0;
           }
-
-          if (curEmotion) {
-            emotionTotals[curEmotion] += delta;
-            updateEmotionHUD();
-          }
-
-          refreshJSONBox();
-        });
-
-      webgazer.showVideo(false);
-      webgazer.showFaceOverlay(false);
-      webgazer.showFaceFeedbackBox(false);
-      webgazer.showPredictionPoints(false);
-
-      try {
-        await webgazer.begin();
-        setStatus('Clique em “Calibrar” e siga as instruções.');
-      } catch (err) {
-        console.error(err);
-        setStatus('Erro ao iniciar a câmera. Verifique permissões/HTTPS.');
-        alert('Erro ao acessar a câmera. Verifique permissões e HTTPS.');
-      }
-
-      initFaceAPI().then(() => emotionLoop());
-    });
-
-    // =================== FUNÇÃO IA ===================
-    async function analisarComIA() {
-      const resumo = getJSONSummary();
-      const prompt = `
-      Analise os seguintes dados de rastreamento ocular:
-
-      ${JSON.stringify(resumo, null, 2)}
-
-      Explique:
-      - Distribuição do olhar (esq/centro/dir).
-      - Se há foco ou distração.
-      - Possíveis interpretações cognitivas.
-      - Recomendações práticas.
-      `;
-
-      try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer AIzaSyBeg0CiFm60xqzJ-xdyI7w5-09jUBvoPGs" // 👉 coloque sua chave aqui
-          },
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [{ role: "user", content: prompt }]
-          })
-        });
-
-        const data = await response.json();
-        const output = data.choices?.[0]?.message?.content || "Sem resposta da IA.";
-        alert("📊 Análise da IA:\n\n" + output);
-      } catch (err) {
-        console.error(err);
-        alert("Erro ao conectar com a IA.");
+          curEmotion = nextEmotion;
+          updateEmotionHUD();
+        }
+      } catch (e) {
+        useFaceAPI = false;
       }
     }
+    setTimeout(emotionLoop, 200);
+  }
 
-    // =================== EVENTOS UI ===================
-    btnCalib.addEventListener('click', startCalibration);
-    btnRecalib.addEventListener('click', resetAndRecalibrate);
-    btnTogglePreview.addEventListener('click', () => {
-      showPreview = !showPreview;
-      webgazer.showVideo(showPreview);
-      webgazer.showFaceOverlay(showPreview);
-      webgazer.showFaceFeedbackBox(showPreview);
-      btnTogglePreview.textContent = showPreview ? 'Ocultar vídeo' : 'Mostrar vídeo';
-    });
-    btnExportCSV.addEventListener('click', exportCSV);
-    btnExportJSON.addEventListener('click', exportJSON);
-    btnCopyJSON.addEventListener('click', copyJSON);
-    btnToggleJSON.addEventListener('click', () => {
-      const on = jsonBox.style.display !== 'none';
-      jsonBox.style.display = on ? 'none' : 'block';
-      btnToggleJSON.textContent = on ? 'Mostrar' : 'Ocultar';
-    });
-    btnAnalyzeAI.addEventListener('click', analisarComIA);
+  // =================== INICIALIZAÇÃO ===================
+  window.addEventListener('load', async () => {
+    layoutRegions();
+    webgazer
+      .setRegression('ridge')
+      .setGazeListener((data) => {
+        if (!data) return;
+        const now = performance.now();
+        const delta = now - lastTs;
+        lastTs = now;
 
-    window.addEventListener('resize', () => { layoutRegions(); });
-    inpCenterPct.addEventListener('change', () => { centerPct = parseFloat(inpCenterPct.value)/100; layoutRegions(); });
-    inpDwellMs.addEventListener('change', () => { dwellThresholdMs = Math.max(50, parseInt(inpDwellMs.value,10)||250); });
-    inpBoredMs.addEventListener('change', () => { boredThresholdMs = Math.max(1000, parseInt(inpBoredMs.value,10)||5000); });
+        if (emaX === null) { emaX = data.x; emaY = data.y; }
+        else { emaX = EMA_ALPHA * data.x + (1 - EMA_ALPHA) * emaX;
+              emaY = EMA_ALPHA * data.y + (1 - EMA_ALPHA) * emaY; }
+
+        gazeDot.style.left = emaX + 'px'; gazeDot.style.top  = emaY + 'px';
+
+        if (curRegion) { dwellTotals[curRegion] += delta; updateRegionHUD(); }
+
+        const rNow = whichRegion(emaX);
+        if (candRegion !== rNow) { candRegion = rNow; candSince = now; }
+        curDwellEl.textContent = Math.max(0, Math.round(now - candSince));
+        if (curRegion !== candRegion && (now - candSince) >= dwellThresholdMs) {
+          curRegion = candRegion; setActiveRegionUI(curRegion); logRegionChange(curRegion, emaX, emaY);
+        }
+
+        if (curEmotion) {
+          emotionTotals[curEmotion] += delta;
+          updateEmotionHUD();
+        }
+
+        refreshJSONBox();
+      });
+
+    webgazer.showVideo(false);
+    webgazer.showFaceOverlay(false);
+    webgazer.showFaceFeedbackBox(false);
+    webgazer.showPredictionPoints(false);
+
+    try {
+      await webgazer.begin();
+      setStatus('Clique em “Calibrar” e siga as instruções.');
+    } catch (err) {
+      console.error(err);
+      setStatus('Erro ao iniciar a câmera. Verifique permissões/HTTPS.');
+      alert('Erro ao acessar a câmera. Verifique permissões e HTTPS.');
+    }
+
+    initFaceAPI().then(() => emotionLoop());
+  });
+
+  // =================== FUNÇÃO IA (LOCAL, SEM API) ===================
+  function pct(n){ return (Math.round(n*100)/100).toFixed(2) + '%'; }
+  function fmtSec(ms){ return (ms/1000).toFixed(1) + 's'; }
+
+  function analisarComIA() {
+    const resumo = getJSONSummary();
+
+    // Regiões
+    const r = resumo.regions || {leftPct:0,centerPct:0,rightPct:0,totalMs:0};
+    const left = r.leftPct||0, center = r.centerPct||0, right = r.rightPct||0, totalR = r.totalMs||0;
+
+    const focoCentro = center >= 60;
+    const distrEsq   = left >= 30;
+    const distrDir   = right >= 30;
+    const distribuida= !focoCentro && (center>=40 && left>=20 && right>=20);
+
+    // Emoções
+    const e = resumo.emotions || {happyPct:0,sadPct:0,boredPct:0,neutralPct:0,totalMs:0};
+    const happy = e.happyPct||0, sad = e.sadPct||0, bored = e.boredPct||0, neutral = e.neutralPct||0, totalE = e.totalMs||0;
+
+    const engajado     = happy >= 25 && bored < 25;
+    const entediado    = bored >= 40;
+    const neutroDemais = neutral >= 50 && happy < 15;
+
+    // Estado atual
+    const cur = resumo.current || {};
+    const curRegion = cur.region || '–';
+    const curEmotion= cur.emotion || '–';
+
+    // Recomendações
+    const recs = [];
+    if (focoCentro && (left+right) <= 40) {
+      recs.push('Manter distribuição atual; centro parece adequado.');
+    } else {
+      recs.push('Aumentar levemente a largura do centro (ex.: +5%) para dar mais “área de jogo”.');
+    }
+    if (dwellThresholdMs < 200) {
+      recs.push('Aumentar o “dwell para troca” para ~250–300 ms para reduzir trocas acidentais.');
+    } else if (dwellThresholdMs > 450) {
+      recs.push('Reduzir o “dwell para troca” para ~250–350 ms para tornar a detecção mais responsiva.');
+    }
+    if (entediado || neutroDemais) {
+      recs.push('Inserir pausas curtas (1–2 min) e micro-variações visuais para reduzir tédio/neutro.');
+    } else if (engajado) {
+      recs.push('Manter estímulos atuais; sinais de engajamento estão bons.');
+    }
+    if (center < 45 && (left>28 || right>28)) {
+      recs.push('Refazer a calibração com iluminação frontal e distância estável da tela.');
+    }
+    if (totalR > 0 && totalR/1000 > 180) {
+      recs.push('Se a sessão passar de 3–5 min contínuos, faça pausas breves para manter a qualidade do gaze.');
+    }
+
+    // Relatório
+    const linhas = [];
+    linhas.push('🧠 Análise (local, sem API)');
+    linhas.push('Atualizado em: ' + new Date().toLocaleString());
+    linhas.push('');
+    linhas.push('== Regiões ==');
+    linhas.push('• Esquerda: ' + pct(left)  + '  |  Centro: ' + pct(center) + '  |  Direita: ' + pct(right));
+    linhas.push('• Tempo total observado (regiões): ' + fmtSec(totalR));
+    if (focoCentro) linhas.push('• Interpretação: foco bom no centro.');
+    if (distribuida) linhas.push('• Interpretação: atenção distribuída (pode indicar exploração/varredura).');
+    if (distrEsq)   linhas.push('• Interpretação: muita atenção à esquerda — verifique posição do conteúdo/monitor.');
+    if (distrDir)   linhas.push('• Interpretação: muita atenção à direita — verifique posição do conteúdo/monitor.');
+
+    linhas.push('');
+    linhas.push('== Emoções ==');
+    linhas.push('• Feliz: ' + pct(happy) + '  |  Triste: ' + pct(sad) + '  |  Tédio: ' + pct(bored) + '  |  Neutro: ' + pct(neutral));
+    linhas.push('• Tempo total detectado (emoções): ' + fmtSec(totalE));
+    if (engajado)      linhas.push('• Interpretação: sinais de engajamento positivos.');
+    if (entediado)     linhas.push('• Interpretação: alto tédio — provável queda de engajamento.');
+    if (neutroDemais)  linhas.push('• Interpretação: estado muito neutro — pouca reatividade emocional.');
+
+    linhas.push('');
+    linhas.push('== Estado atual ==');
+    linhas.push('• Região atual: ' + curRegion + '  |  Emoção atual: ' + curEmotion);
+
+    linhas.push('');
+    linhas.push('== Recomendações ==');
+    if (recs.length) { for (let i=0;i<recs.length;i++) linhas.push('• ' + recs[i]); }
+    else { linhas.push('• Nenhuma recomendação no momento.'); }
+
+    alert(linhas.join('\n'));
+  }
+
+  // =================== EVENTOS UI ===================
+  btnCalib.addEventListener('click', startCalibration);
+  btnRecalib.addEventListener('click', resetAndRecalibrate);
+  btnTogglePreview.addEventListener('click', () => {
+    showPreview = !showPreview;
+    webgazer.showVideo(showPreview);
+    webgazer.showFaceOverlay(showPreview);
+    webgazer.showFaceFeedbackBox(showPreview);
+    btnTogglePreview.textContent = showPreview ? 'Ocultar vídeo' : 'Mostrar vídeo';
+  });
+  btnExportCSV.addEventListener('click', exportCSV);
+  btnExportJSON.addEventListener('click', exportJSON);
+  btnCopyJSON.addEventListener('click', copyJSON);
+  btnToggleJSON.addEventListener('click', () => {
+    const on = jsonBox.style.display !== 'none';
+    jsonBox.style.display = on ? 'none' : 'block';
+    btnToggleJSON.textContent = on ? 'Mostrar' : 'Ocultar';
+  });
+  btnAnalyzeAI.addEventListener('click', analisarComIA);
+
+  window.addEventListener('resize', () => { layoutRegions(); });
+  inpCenterPct.addEventListener('change', () => { centerPct = parseFloat(inpCenterPct.value)/100; layoutRegions(); });
+  inpDwellMs.addEventListener('change', () => { dwellThresholdMs = Math.max(50, parseInt(inpDwellMs.value,10)||250); });
+  inpBoredMs.addEventListener('change', () => { boredThresholdMs = Math.max(1000, parseInt(inpBoredMs.value,10)||5000); });
   </script>
 </body>
 </html>
