@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Relatórios (JSON)</title>
+  <title>Relatórios (JSON • Análise local)</title>
   <link rel="stylesheet" href="css/styles.css">
   <style>
     :root{--bg:#0b1020;--card:#12182b;--muted:#9aa3b2;--txt:#e6ebf5}
@@ -15,18 +15,13 @@
     .logo{width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,#7c3aed,#22d3ee)}
     .title{font-weight:700}
     .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;border:1px solid #2a3250;background:#161d35;color:#e6ebf5;text-decoration:none;cursor:pointer}
-    .btn:disabled{opacity:.6;cursor:not-allowed}
     .btn.green{background:#0f2a1a;border-color:#1d7a47}
     .card{background:var(--card);border:1px solid #283052;border-radius:14px;padding:16px;margin-bottom:16px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
     .muted{color:var(--muted)}
     .status{margin:12px 0;padding:10px 12px;border:1px solid #2a3250;border-radius:10px;background:#0e1427;color:#bfeaff}
     .status b{color:#fff}
-    textarea.jsonbox{width:100%;min-height:360px;background:#0e1427;border:1px solid #283052;border-radius:10px;color:#e6ebf5;padding:12px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical}
-    .row.right{justify-content:flex-end}
-    .keywrap{display:flex;gap:8px;flex-wrap:wrap}
-    .keywrap input{flex:1 1 320px;padding:10px 12px;border-radius:10px;border:1px solid #2a3250;background:#0e1427;color:#e6ebf5}
-    .pill{display:inline-flex;gap:6px;align-items:center;background:#0e1427;border:1px solid #283052;border-radius:999px;padding:6px 10px;font-size:12px}
+    textarea.jsonbox{width:100%;min-height:320px;background:#0e1427;border:1px solid #283052;border-radius:10px;color:#e6ebf5;padding:12px;font:13px/1.5 ui-monospace,Consolas,Menlo,monospace;resize:vertical}
     .sep{height:1px;background:#283052;margin:14px 0}
   </style>
 </head>
@@ -41,8 +36,7 @@
 
     <div class="card">
       <div class="row">
-        <span class="pill">Manter até 5 jogadas por jogo (armazenadas no navegador).</span>
-        <span class="pill">Chaves: <b>history_gonogo</b>, <b>history_stroop</b>, <b>history_nback</b></span>
+        <span class="muted">Até 5 jogadas por jogo ficam salvas no seu navegador (chaves: <b>history_gonogo</b>, <b>history_stroop</b>, <b>history_nback</b>).</span>
       </div>
       <div class="row" style="margin-top:10px">
         <button id="btnRefresh" class="btn">🔄 Atualizar JSON</button>
@@ -55,185 +49,144 @@
     </div>
 
     <div class="card">
-      <h3 style="margin-top:0">Analisar com IA (Gemini)</h3>
-      <p class="muted">Cole sua <b>API Key do Gemini</b> (Google AI Studio). Ela será salva apenas no seu navegador (localStorage) e usada nesta página.</p>
-      <div class="keywrap">
-        <input id="inpKey" type="password" placeholder="Cole aqui sua chave do Gemini (ex.: AIza...)" />
-        <button id="btnSaveKey" class="btn">🔐 Salvar chave</button>
-        <button id="btnHideShow" class="btn">👁 Mostrar</button>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="btnAnalyze" class="btn green">🤖 Analisar JSON com Gemini</button>
+      <h3 style="margin-top:0">Analisar localmente (sem chave, sem internet)</h3>
+      <p class="muted">Gera um relatório inteligente no próprio navegador (médias, tendências, alertas e recomendações).</p>
+      <div class="row">
+        <button id="btnAnalyzeLocal" class="btn green">🤖 Analisar JSON (local)</button>
       </div>
       <div class="sep"></div>
-      <textarea id="aiOut" class="jsonbox" placeholder="Saída da IA aparecerá aqui..."></textarea>
-      <p class="muted">Modelo usado: <b>gemini-1.5-flash</b> (endpoint v1beta). Sem optional chaining para compatibilidade ampla.</p>
+      <textarea id="aiOut" class="jsonbox" placeholder="A análise aparecerá aqui..."></textarea>
     </div>
   </div>
 
   <script>
-    // ===== Constantes dos jogos =====
-    var GAMES = [
-      {key:'gonogo',  label:'Go/No-Go'},
-      {key:'stroop',  label:'Stroop'},
-      {key:'nback',   label:'N-Back 1'}
-    ];
-
-    // ===== Utils DOM =====
+    // ===== Jogos / storage =====
+    var GAMES = [{key:'gonogo',label:'Go/No-Go'},{key:'stroop',label:'Stroop'},{key:'nback',label:'N-Back 1'}];
     function $(id){ return document.getElementById(id); }
     function setStatus(html){ $('status').innerHTML = html; }
+    function loadHist(key){ var raw = localStorage.getItem('history_'+key); try { return raw ? JSON.parse(raw) : []; } catch(e){ return []; } }
+    function clearAll(){ for (var i=0;i<GAMES.length;i++){ localStorage.removeItem('history_'+GAMES[i].key); } }
 
-    // ===== LocalStorage helpers =====
-    function loadHist(key){
-      var raw = localStorage.getItem('history_'+key);
-      try { return raw ? JSON.parse(raw) : []; } catch(e){ return []; }
-    }
-    function clearAll(){
-      for (var i=0;i<GAMES.length;i++){
-        localStorage.removeItem('history_'+GAMES[i].key);
-      }
-    }
-
-    // ===== Builder do JSON =====
+    // ===== Monta JSON =====
     function buildJSON(){
-      var out = {
-        version: "1.0",
-        generatedAt: new Date().toISOString(),
-        games: {}
-      };
-      for (var i=0;i<GAMES.length;i++){
-        var k = GAMES[i].key;
-        out.games[k] = loadHist(k);
-      }
+      var out = { version:"1.0", generatedAt:new Date().toISOString(), games:{} };
+      for (var i=0;i<GAMES.length;i++){ out.games[GAMES[i].key] = loadHist(GAMES[i].key); }
       return out;
     }
 
-    // ===== Ações JSON (UI) =====
+    // ===== UI JSON =====
     function refreshJSON(){
-      var data = buildJSON();
-      $('jsonBox').value = JSON.stringify(data, null, 2);
-      setStatus('✅ JSON atualizado com sucesso.');
+      $('jsonBox').value = JSON.stringify(buildJSON(), null, 2);
+      setStatus('✅ JSON atualizado.');
     }
     function copyJSON(){
-      try{
-        var txt = $('jsonBox').value;
-        navigator.clipboard.writeText(txt).then(function(){
-          setStatus('📋 JSON copiado para a área de transferência.');
-        }, function(){
-          setStatus('⚠ Não foi possível copiar. Selecione e copie manualmente.');
-        });
-      }catch(e){
-        setStatus('⚠ Copia não suportada. Selecione e copie manualmente.');
-      }
+      var txt = $('jsonBox').value || JSON.stringify(buildJSON(), null, 2);
+      navigator.clipboard.writeText(txt).then(function(){ setStatus('📋 JSON copiado.'); },
+        function(){ setStatus('⚠ Copie manualmente (permissão de clipboard?).'); });
     }
     function downloadJSON(){
       var data = $('jsonBox').value || JSON.stringify(buildJSON(), null, 2);
       var blob = new Blob([data], {type:'application/json'});
       var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url; a.download = 'neuro_reports.json';
+      var a = document.createElement('a'); a.href=url; a.download='neuro_reports.json';
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-      setStatus('💾 Download iniciado: neuro_reports.json');
+      setStatus('💾 Baixado: neuro_reports.json');
     }
 
-    // ===== Gemini Key (localStorage) =====
-    var KEY_STORAGE = 'GEMINI_API_KEY';
-    function saveKey(){
-      var val = $('inpKey').value.trim();
-      if (!val){ setStatus('⚠ Cole uma chave válida antes de salvar.'); return; }
-      localStorage.setItem(KEY_STORAGE, val);
-      setStatus('🔐 Chave salva localmente (localStorage).');
+    // ===== “IA” local (sem API) =====
+    function mean(arr){ if(!arr.length) return 0; var s=0; for(var i=0;i<arr.length;i++) s+=arr[i]; return s/arr.length; }
+    function trend(arr){ // retorna ↑ ↓ → comparando média últimas 3 vs anteriores
+      if(arr.length<2) return '→';
+      var k=Math.min(3,arr.length); 
+      var recent=arr.slice(-k); var prev=arr.slice(0,arr.length-k);
+      if(prev.length===0) return '→';
+      var mR=mean(recent), mP=mean(prev);
+      var diff=mR-mP, rel=Math.abs(diff)/Math.max(1,mP);
+      if(diff>0 && rel>0.05) return '↑'; // +5%
+      if(diff<0 && rel>0.05) return '↓';
+      return '→';
     }
-    function loadKeyToInput(){
-      var k = localStorage.getItem(KEY_STORAGE);
-      if (k){ $('inpKey').value = k; }
-    }
-    function toggleKeyVisibility(){
-      var el = $('inpKey');
-      if (el.type === 'password'){ el.type = 'text'; $('btnHideShow').textContent = '🙈 Ocultar'; }
-      else { el.type = 'password'; $('btnHideShow').textContent = '👁 Mostrar'; }
-    }
+    function safePct(x){ return (Math.round(x*10)/10).toFixed(1) + '%'; }
 
-    // ===== Chamada ao Gemini =====
-    async function analyzeWithGemini(){
-      var apiKey = localStorage.getItem(KEY_STORAGE);
-      if (!apiKey){ setStatus('❌ Nenhuma chave do Gemini salva. Cole e clique em "Salvar chave".'); return; }
+    function analyzeLocally(){
+      // garante JSON
+      var raw = $('jsonBox').value;
+      if(!raw || raw.indexOf('"games"')===-1){ raw = JSON.stringify(buildJSON(), null, 2); $('jsonBox').value = raw; }
+      var data; try{ data = JSON.parse(raw); }catch(e){ $('aiOut').value = 'JSON inválido.'; return; }
 
-      // Garante JSON atualizado
-      var payload = $('jsonBox').value;
-      if (!payload || payload.trim() === '' || payload.indexOf('"games"') === -1){
-        payload = JSON.stringify(buildJSON(), null, 2);
-        $('jsonBox').value = payload;
+      var lines = [];
+      lines.push('🧠 Relatório (análise local, sem IA na nuvem)');
+      lines.push('Gerado em: '+new Date().toLocaleString());
+      lines.push('');
+
+      function blockForGame(key, label){
+        var arr = (data.games && data.games[key]) ? data.games[key] : [];
+        lines.push('## '+label);
+        if(!arr.length){ lines.push('Sem jogadas registradas.'); lines.push(''); return; }
+
+        // ordenar por ts ascendente
+        arr = arr.slice().sort(function(a,b){ return a.ts - b.ts; });
+
+        // métricas por sessão
+        var accs = arr.map(function(s){ return (s.hits / Math.max(1,s.trials)) * 100; });
+        var errs = arr.map(function(s){ return s.errors || 0; });
+        var hits = arr.map(function(s){ return s.hits || 0; });
+
+        var accMean = mean(accs);
+        var errMean = mean(errs);
+        var hitMean = mean(hits);
+
+        var tAcc = trend(accs);
+        var tErr = trend(errs.map(function(x){return -x;})); // menos erros = melhor
+        var tHit = trend(hits);
+
+        lines.push('Jogadas analisadas: '+arr.length);
+        lines.push('Acurácia média: '+safePct(accMean));
+        lines.push('Erros médios: '+(Math.round(errMean*10)/10));
+        lines.push('Acertos médios: '+(Math.round(hitMean*10)/10));
+        lines.push('Tendências — Acurácia: '+tAcc+' | Erros: '+tErr+' | Acertos: '+tHit);
+
+        // alertas simples
+        var last = arr[arr.length-1];
+        var lastAcc = (last.hits/Math.max(1,last.trials))*100;
+        var alertas = [];
+        if(lastAcc < 60) alertas.push('queda de desempenho na última sessão (<60% de acurácia)');
+        if(errMean > (last.trials*0.4)) alertas.push('muitos erros em média');
+        if(arr.length>=5 && tAcc==='↓') alertas.push('tendência de queda nas últimas sessões');
+
+        if(alertas.length){
+          lines.push('⚠ Alertas: '+alertas.join(' · '));
+        } else {
+          lines.push('✅ Sem alertas relevantes.');
+        }
+
+        // recomendações heurísticas
+        var recs = [];
+        // duração ideal (baseada em 20 trials padrão do Go/No-Go)
+        if(accMean < 70) recs.push('fazer sessões mais curtas e frequentes (ex.: 2×10 min)');
+        else recs.push('manter volume atual com pausas curtas (2–3 min a cada 10–15 min)');
+        if(tAcc==='↓') recs.push('reduzir distrações e aumentar intervalo entre blocos');
+        if(tErr==='↓') recs.push('progredir gradualmente a dificuldade');
+        if(recs.length) lines.push('💡 Recomendações: '+recs.join(' · '));
+
+        lines.push('');
       }
 
-      var prompt = [
-        "Você é um analista cognitivo. Analise o seguinte JSON de sessões de jogos neurocognitivos.",
-        "Explique com objetividade:",
-        "- Métricas por jogo (acertos, erros, acurácia média).",
-        "- Se há melhora/queda recente (últimas jogadas).",
-        "- Recomendações práticas (duração, pausas, ajustes).",
-        "",
-        "JSON:\n"+payload
-      ].join("\n");
+      blockForGame('gonogo','Go/No-Go');
+      blockForGame('stroop','Stroop');
+      blockForGame('nback','N-Back 1');
 
-      var body = {
-        contents: [{
-          role: "user",
-          parts: [{ text: prompt }]
-        }]
-      };
-
-      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key="+encodeURIComponent(apiKey);
-      try{
-        $('aiOut').value = "Processando com Gemini...";
-        var res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        if (!res.ok){
-          var tx = await res.text();
-          $('aiOut').value = "Erro HTTP "+res.status+": "+tx;
-          setStatus('❌ Falha na chamada ao Gemini. Veja detalhes na saída.');
-          return;
-        }
-        var data = await res.json();
-        // Extrai texto (sem optional chaining p/ compatibilidade)
-        var text = "";
-        try {
-          if (data && data.candidates && data.candidates.length>0 &&
-              data.candidates[0].content && data.candidates[0].content.parts &&
-              data.candidates[0].content.parts.length>0 &&
-              data.candidates[0].content.parts[0].text){
-            text = data.candidates[0].content.parts[0].text;
-          } else {
-            text = JSON.stringify(data, null, 2);
-          }
-        } catch(e){
-          text = JSON.stringify(data, null, 2);
-        }
-        $('aiOut').value = text;
-        setStatus('✅ Análise concluída pelo Gemini.');
-      }catch(err){
-        console.error(err);
-        $('aiOut').value = String(err);
-        setStatus('❌ Erro de rede na chamada ao Gemini.');
-      }
+      $('aiOut').value = lines.join('\n');
+      setStatus('✅ Análise local pronta.');
     }
 
-    // ===== Inicialização =====
+    // ===== init =====
     window.addEventListener('DOMContentLoaded', function(){
-      loadKeyToInput();
       $('btnRefresh').onclick  = refreshJSON;
       $('btnCopy').onclick     = copyJSON;
       $('btnDownload').onclick = downloadJSON;
-      $('btnClearAll').onclick = function(){
-        clearAll(); refreshJSON();
-        setStatus('🗑 Histórico apagado para todos os jogos.');
-      };
-      $('btnSaveKey').onclick  = saveKey;
-      $('btnHideShow').onclick = toggleKeyVisibility;
-      $('btnAnalyze').onclick  = function(){ analyzeWithGemini(); };
+      $('btnClearAll').onclick = function(){ clearAll(); refreshJSON(); setStatus('🗑 Histórico limpo.'); };
+      $('btnAnalyzeLocal').onclick = analyzeLocally;
     });
   </script>
 </body>
